@@ -53,6 +53,7 @@ python visualize.py --model results/model_Transformer_d128_ff256.pt
 python visualize.py --sentence "this film is absolutely terrible"
 ```
 
+
 ## Ghi chú cho sinh viên
 - Chỉ cần điền các phần `# TODO` trong `model.py`.
 - Không đổi tên hàm và tham số.

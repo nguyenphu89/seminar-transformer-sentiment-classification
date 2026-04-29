@@ -82,7 +82,7 @@ def plot_learning_curve(history, save_path: Path):
     plt.close()
 
 
-def train_one_config(model_name, model, train_loader, val_loader, test_loader, num_epochs, lr, device, results_dir: Path):
+def train_one_config(model_name, model, train_loader, val_loader, test_loader, num_epochs, lr, device, results_dir: Path, logger=print):
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
@@ -103,7 +103,7 @@ def train_one_config(model_name, model, train_loader, val_loader, test_loader, n
             best_val_acc = val_metrics.acc
             torch.save(model.state_dict(), best_model_path)
 
-        print(
+        logger(
             f"Epoch {epoch:02d} | train_loss={train_metrics.loss:.4f} train_acc={train_metrics.acc:.4f} | "
             f"val_loss={val_metrics.loss:.4f} val_acc={val_metrics.acc:.4f}"
         )
@@ -125,6 +125,77 @@ def train_one_config(model_name, model, train_loader, val_loader, test_loader, n
     }
 
 
+def build_model_configs(meta: dict, d_model: int, d_ff: int, run_all: bool):
+    if run_all:
+        return [
+            ("Transformer_d64_ff128", TransformerClassifier(meta["vocab_size"], 64, 128, meta["max_len"], meta["num_classes"])),
+            ("Transformer_d128_ff256", TransformerClassifier(meta["vocab_size"], 128, 256, meta["max_len"], meta["num_classes"])),
+            ("Transformer_d32_ff64", TransformerClassifier(meta["vocab_size"], 32, 64, meta["max_len"], meta["num_classes"])),
+            ("MLPBaseline_d64", MLPBaseline(meta["vocab_size"], 64, meta["num_classes"])),
+        ]
+    return [
+        (
+            f"Transformer_d{d_model}_ff{d_ff}",
+            TransformerClassifier(meta["vocab_size"], d_model, d_ff, meta["max_len"], meta["num_classes"]),
+        )
+    ]
+
+
+def train_models(
+    processed_dir: str | Path = "data/processed",
+    results_dir: str | Path = "results",
+    batch_size: int = 32,
+    d_model: int = 64,
+    d_ff: int = 128,
+    lr: float = 1e-3,
+    num_epochs: int = 20,
+    run_all: bool = False,
+    logger=print,
+):
+    set_seed(42)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    processed_dir = Path(processed_dir)
+    results_dir = Path(results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(processed_dir / "meta.json", "r", encoding="utf-8") as f:
+        meta = json.load(f)
+
+    train_loader = DataLoader(load_split(processed_dir / "train.pt"), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(load_split(processed_dir / "val.pt"), batch_size=batch_size)
+    test_loader = DataLoader(load_split(processed_dir / "test.pt"), batch_size=batch_size)
+
+    configs = build_model_configs(meta, d_model, d_ff, run_all)
+
+    summary = []
+    for name, model in configs:
+        logger(f"\n===== Running {name} =====")
+        result = train_one_config(
+            name,
+            model.to(device),
+            train_loader,
+            val_loader,
+            test_loader,
+            num_epochs,
+            lr,
+            device,
+            results_dir,
+            logger=logger,
+        )
+        summary.append(result)
+
+    summary_path = results_dir / "summary.json"
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    logger("\n=== SUMMARY ===")
+    for row in summary:
+        logger(str(row))
+    logger(f"Saved summary to: {summary_path}")
+
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--processed_dir", type=str, default="data/processed")
@@ -137,46 +208,16 @@ def main():
     parser.add_argument("--run_all", action="store_true")
     args = parser.parse_args()
 
-    set_seed(42)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    processed_dir = Path(args.processed_dir)
-    results_dir = Path(args.results_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    with open(processed_dir / "meta.json", "r", encoding="utf-8") as f:
-        meta = json.load(f)
-
-    train_loader = DataLoader(load_split(processed_dir / "train.pt"), batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(load_split(processed_dir / "val.pt"), batch_size=args.batch_size)
-    test_loader = DataLoader(load_split(processed_dir / "test.pt"), batch_size=args.batch_size)
-
-    configs = []
-    if args.run_all:
-        configs = [
-            ("Transformer_d64_ff128", TransformerClassifier(meta["vocab_size"], 64, 128, meta["max_len"], meta["num_classes"])),
-            ("Transformer_d128_ff256", TransformerClassifier(meta["vocab_size"], 128, 256, meta["max_len"], meta["num_classes"])),
-            ("Transformer_d32_ff64", TransformerClassifier(meta["vocab_size"], 32, 64, meta["max_len"], meta["num_classes"])),
-            ("MLPBaseline_d64", MLPBaseline(meta["vocab_size"], 64, meta["num_classes"])),
-        ]
-    else:
-        configs = [
-            (f"Transformer_d{args.d_model}_ff{args.d_ff}", TransformerClassifier(meta["vocab_size"], args.d_model, args.d_ff, meta["max_len"], meta["num_classes"]))
-        ]
-
-    summary = []
-    for name, model in configs:
-        print(f"\n===== Running {name} =====")
-        result = train_one_config(name, model.to(device), train_loader, val_loader, test_loader, args.num_epochs, args.lr, device, results_dir)
-        summary.append(result)
-
-    summary_path = results_dir / "summary.json"
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-
-    print("\n=== SUMMARY ===")
-    for row in summary:
-        print(row)
-    print(f"Saved summary to: {summary_path}")
+    train_models(
+        processed_dir=args.processed_dir,
+        results_dir=args.results_dir,
+        batch_size=args.batch_size,
+        d_model=args.d_model,
+        d_ff=args.d_ff,
+        lr=args.lr,
+        num_epochs=args.num_epochs,
+        run_all=args.run_all,
+    )
 
 
 if __name__ == "__main__":
